@@ -16,28 +16,24 @@ public class EnumGenerator : IIncrementalGenerator
         context.RegisterPostInitializationOutput(static ctx => ctx.AddSource(
             "EnumExtensionsAttribute.g.cs", SourceText.From(SourceGenerationHelper.Attribute, Encoding.UTF8)));
 
-        IncrementalValuesProvider<EnumToGenerate?> enumsToGenerate = context.SyntaxProvider
+        IncrementalValuesProvider<EnumDeclarationSyntax?> enumDeclarations = context.SyntaxProvider
             .CreateSyntaxProvider(
                 predicate: static (s, _) => IsSyntaxTargetForGeneration(s),
                 transform: static (ctx, _) => GetSemanticTargetForGeneration(ctx))
             .Where(static m => m is not null);
 
-        // If you're targeting the .NET 7 SDK, use this version instead:
-        // IncrementalValuesProvider<EnumToGenerate?> enumsToGenerate = context.SyntaxProvider
-        //     .ForAttributeWithMetadataName(
-        //         "NetEscapades.EnumGenerators.EnumExtensionsAttribute",
-        //         predicate: static (s, _) => true,
-        //         transform: static (ctx, _) => GetEnumToGenerate(ctx.SemanticModel, ctx.TargetNode))
-        //     .Where(static m => m is not null);
+        IncrementalValueProvider<(Compilation, ImmutableArray<EnumDeclarationSyntax>)> compilationAndEnums
+                   = context.CompilationProvider.Combine(enumDeclarations.Collect());
 
-        context.RegisterSourceOutput(enumsToGenerate,
-            static (spc, source) => Execute(source, spc));
+
+        context.RegisterSourceOutput(compilationAndEnums,
+            static (spc, source) => Execute(source.Item1, source.Item2, spc));
     }
 
     static bool IsSyntaxTargetForGeneration(SyntaxNode node)
         => node is EnumDeclarationSyntax m && m.AttributeLists.Count > 0;
 
-    static EnumToGenerate? GetSemanticTargetForGeneration(GeneratorSyntaxContext context)
+    static EnumDeclarationSyntax? GetSemanticTargetForGeneration(GeneratorSyntaxContext context)
     {
         // we know the node is a EnumDeclarationSyntax thanks to IsSyntaxTargetForGeneration
         var enumDeclarationSyntax = (EnumDeclarationSyntax)context.Node;
@@ -60,7 +56,7 @@ public class EnumGenerator : IIncrementalGenerator
                 if (fullName == EnumExtensionsAttribute)
                 {
                     // return the enum
-                    return GetEnumToGenerate(context.SemanticModel, enumDeclarationSyntax);
+                    return enumDeclarationSyntax;
                 }
             }
         }
@@ -78,7 +74,30 @@ public class EnumGenerator : IIncrementalGenerator
             context.AddSource($"EnumExtensions.{value.Name}.g.cs", SourceText.From(result, Encoding.UTF8));
         }
     }
+    static void Execute(Compilation compilation, ImmutableArray<EnumDeclarationSyntax> enums, SourceProductionContext context)
+    {
+        if (enums.IsDefaultOrEmpty)
+        {
+            return;
+        }
 
+        // Add a dummy diagnostic
+        context.ReportDiagnostic(CreateDiagnostic(enums[0]));
+
+        // ...
+    }
+    static Diagnostic CreateDiagnostic(EnumDeclarationSyntax syntax)
+    {
+        var descriptor = new DiagnosticDescriptor(
+            id: "TEST01",
+            title: "A test diagnostic",
+            messageFormat: "A description about the problem",
+            category: "tests",
+            defaultSeverity: DiagnosticSeverity.Warning,
+            isEnabledByDefault: true);
+
+        return Diagnostic.Create(descriptor, syntax.GetLocation());
+    }
     static EnumToGenerate? GetEnumToGenerate(SemanticModel semanticModel, SyntaxNode enumDeclarationSyntax)
     {
         if (semanticModel.GetDeclaredSymbol(enumDeclarationSyntax) is not INamedTypeSymbol enumSymbol)
