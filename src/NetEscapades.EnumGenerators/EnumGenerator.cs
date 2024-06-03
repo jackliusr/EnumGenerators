@@ -1,4 +1,5 @@
-﻿using System.Collections.Immutable;
+﻿using System;
+using System.Collections.Immutable;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -65,15 +66,6 @@ public class EnumGenerator : IIncrementalGenerator
         return null;
     }
 
-    static void Execute(EnumToGenerate? enumToGenerate, SourceProductionContext context)
-    {
-        if (enumToGenerate is { } value)
-        {
-            // generate the source code and add it to the output
-            string result = SourceGenerationHelper.GenerateExtensionClass(value);
-            context.AddSource($"EnumExtensions.{value.Name}.g.cs", SourceText.From(result, Encoding.UTF8));
-        }
-    }
     static void Execute(Compilation compilation, ImmutableArray<EnumDeclarationSyntax> enums, SourceProductionContext context)
     {
         if (enums.IsDefaultOrEmpty)
@@ -84,8 +76,65 @@ public class EnumGenerator : IIncrementalGenerator
         // Add a dummy diagnostic
         context.ReportDiagnostic(CreateDiagnostic(enums[0]));
 
-        // ...
+        IEnumerable<EnumDeclarationSyntax> distinctEnums = enums.Distinct();
+
+        // Convert each EnumDeclarationSyntax to an EnumToGenerate
+        List<EnumToGenerate> enumsToGenerate = GetTypesToGenerate(compilation, distinctEnums, context.CancellationToken);
+
+        // If there were errors in the EnumDeclarationSyntax, we won't create an
+        // EnumToGenerate for it, so make sure we have something to generate
+        if (enumsToGenerate.Count > 0)
+        {
+            // generate the source code and add it to the output
+            string result = SourceGenerationHelper.GenerateExtensionClass(enumsToGenerate);
+            context.AddSource("EnumExtensions.g.cs", SourceText.From(result, Encoding.UTF8));
+        }
+
     }
+
+    private static List<EnumToGenerate> GetTypesToGenerate(
+          Compilation compilation, 
+          IEnumerable<EnumDeclarationSyntax> enums,
+          CancellationToken ct)
+    {
+        var enumsToGenerate = new List<EnumToGenerate>();
+        INamedTypeSymbol? enumAttribute = compilation.GetTypeByMetadataName(EnumExtensionsAttribute);
+        if (enumAttribute == null)
+        {
+            // nothing to do if this type isn't available
+            return enumsToGenerate;
+        }
+
+        foreach (var enumDeclarationSyntax in enums)
+        {
+            // stop if we're asked to
+            ct.ThrowIfCancellationRequested();
+
+            SemanticModel semanticModel = compilation.GetSemanticModel(enumDeclarationSyntax.SyntaxTree);
+            if (semanticModel.GetDeclaredSymbol(enumDeclarationSyntax) is not INamedTypeSymbol enumSymbol)
+            {
+                // something went wrong
+                continue;
+            }
+
+            string enumName = enumSymbol.ToString();
+            ImmutableArray<ISymbol> enumMembers = enumSymbol.GetMembers();
+            var members = new List<string>(enumMembers.Length);
+
+            foreach (ISymbol member in enumMembers)
+            {
+                if (member is IFieldSymbol field && field.ConstantValue is not null)
+                {
+                    members.Add(member.Name);
+                }
+            }
+
+            enumsToGenerate.Add(new EnumToGenerate(enumName, members));
+        }
+
+        return enumsToGenerate;
+    }
+
     static Diagnostic CreateDiagnostic(EnumDeclarationSyntax syntax)
     {
         var descriptor = new DiagnosticDescriptor(

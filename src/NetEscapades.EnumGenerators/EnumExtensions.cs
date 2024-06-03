@@ -5,7 +5,7 @@ using System.Text;
 
 namespace NetEscapades.EnumGenerators;
 
-public static class EnumExtensions
+public static  class EnumExtensions
 {
     public static string ToStringFast(this Colour colour)
     => colour switch

@@ -11,6 +11,16 @@
 	<LangVersion>Latest</LangVersion>
 </PropertyGroup>
 
+<PropertyGroup>
+	<IncludeBuildOutput>false</IncludeBuildOutput>
+</PropertyGroup>	
+	
+<ItemGroup>
+  <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" 
+      PackagePath="analyzers/dotnet/cs" Visible="false" />
+   <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+</ItemGroup>
+	
 <!-- The following libraries include the source generator interfaces and types we need -->
 <ItemGroup>
 	<PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.2" PrivateAssets="all" />
@@ -19,7 +29,6 @@
 
 <!-- This ensures the library will be packaged as a source generator when we use `dotnet pack` -->
 <ItemGroup>
-	<None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true"
-        PackagePath="analyzers/dotnet/cs" Visible="false" />
+	<None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
 </ItemGroup>
 </Project>
