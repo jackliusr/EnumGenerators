@@ -118,6 +118,64 @@ public class EnumGenerator : IIncrementalGenerator
             }
 
             string enumName = enumSymbol.ToString();
+            string extensionName = "EnumExtensions";
+
+            string className = null;
+            string namespaceName = null;
+
+
+            foreach (AttributeData attributeData in enumSymbol.GetAttributes())
+            {
+                if (!enumAttribute.Equals(attributeData.AttributeClass, SymbolEqualityComparer.Default))
+                {
+                    continue;
+                }
+                if(!attributeData.ConstructorArguments.IsEmpty)
+                {
+                    ImmutableArray<TypedConstant> args = attributeData.ConstructorArguments;
+                    foreach (var arg in args)
+                    {
+                        if(arg.Kind == TypedConstantKind.Error)
+                        {
+                            return enumsToGenerate;
+                        }
+                    }
+                    switch( args.Length )
+                    {
+                        case 1:
+                            className = (string)args[0].Value;
+                            break;
+                    }
+
+                }
+
+                if(!attributeData.NamedArguments.IsEmpty)
+                {
+                    foreach (KeyValuePair<string, TypedConstant> namedArgument in attributeData.NamedArguments)
+                    {
+                        TypedConstant typedConstant = namedArgument.Value;
+                        if(typedConstant.Kind == TypedConstantKind.Error)
+                        {
+                            return enumsToGenerate;
+                        } else
+                        {
+                            switch(namedArgument.Key)
+                            {
+                                case "extensionClassName":
+                                    className = namedArgument.Value.ToString();
+                                    break;
+                                case "ExtensionNamespaceName":
+                                    namespaceName = namedArgument.Value.ToString();
+                                    break;
+                            }
+                        }
+                    }
+                }
+          
+                break;
+            }
+
+       
             ImmutableArray<ISymbol> enumMembers = enumSymbol.GetMembers();
             var members = new List<string>(enumMembers.Length);
 
@@ -129,7 +187,7 @@ public class EnumGenerator : IIncrementalGenerator
                 }
             }
 
-            enumsToGenerate.Add(new EnumToGenerate(enumName, members));
+            enumsToGenerate.Add(new EnumToGenerate(enumName, extensionName, members));
         }
 
         return enumsToGenerate;
@@ -147,26 +205,5 @@ public class EnumGenerator : IIncrementalGenerator
 
         return Diagnostic.Create(descriptor, syntax.GetLocation());
     }
-    static EnumToGenerate? GetEnumToGenerate(SemanticModel semanticModel, SyntaxNode enumDeclarationSyntax)
-    {
-        if (semanticModel.GetDeclaredSymbol(enumDeclarationSyntax) is not INamedTypeSymbol enumSymbol)
-        {
-            // something went wrong
-            return null;
-        }
-
-        string enumName = enumSymbol.ToString();
-        ImmutableArray<ISymbol> enumMembers = enumSymbol.GetMembers();
-        var members = new List<string>(enumMembers.Length);
-
-        foreach (ISymbol member in enumMembers)
-        {
-            if (member is IFieldSymbol field && field.ConstantValue is not null)
-            {
-                members.Add(member.Name);
-            }
-        }
-
-        return new EnumToGenerate(enumName, members);
-    }
+   
 }
