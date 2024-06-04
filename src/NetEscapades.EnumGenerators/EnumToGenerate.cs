@@ -2,14 +2,34 @@
 
 public readonly record struct EnumToGenerate
 {
-    public readonly string ExtensionName; //👈 New field
     public readonly string Name;
-    public readonly EquatableArray<string> Values;
+    public readonly string FullyQualifiedName;
+    public readonly string Namespace;
+    public readonly bool IsPublic;
+    public readonly bool HasFlags;
+    public readonly string UnderlyingType;
 
-    public EnumToGenerate(string name, string extensionName, List<string> values )
+    public readonly EquatableArray<(string Key, EnumValueOption Value)> Names;
+
+    public readonly bool IsDisplayAttributeUsed;
+
+    public EnumToGenerate(
+        string name,
+        string ns,
+        string fullyQualifiedName,
+        string underlyingType,
+        bool isPublic,
+        List<(string, EnumValueOption)> names,
+        bool hasFlags,
+        bool isDisplayAttributeUsed)
     {
         Name = name;
-        Values = new(values.ToArray());
-        ExtensionName = extensionName;
+        Namespace = ns;
+        UnderlyingType = underlyingType;
+        Names = new EquatableArray<(string, EnumValueOption)>(names.ToArray());
+        HasFlags = hasFlags;
+        IsPublic = isPublic;
+        FullyQualifiedName = fullyQualifiedName;
+        IsDisplayAttributeUsed = isDisplayAttributeUsed;
     }
 }

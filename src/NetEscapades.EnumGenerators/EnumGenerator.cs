@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Immutable;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel;
 using System.Text;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
@@ -11,25 +14,146 @@ namespace NetEscapades.EnumGenerators;
 public class EnumGenerator : IIncrementalGenerator
 {
     private const string EnumExtensionsAttribute = "NetEscapades.EnumGenerators.EnumExtensionsAttribute";
+    private const string DisplayAttribute = "System.ComponentModel.DataAnnotations.DisplayAttribute";
+    private const string DescriptionAttribute = "System.ComponentModel.DescriptionAttribute";
+    private const string FlagsAttribute = "System.FlagsAttribute";
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         context.RegisterPostInitializationOutput(static ctx => ctx.AddSource(
             "EnumExtensionsAttribute.g.cs", SourceText.From(SourceGenerationHelper.Attribute, Encoding.UTF8)));
 
-        IncrementalValuesProvider<EnumDeclarationSyntax?> enumDeclarations = context.SyntaxProvider
-            .CreateSyntaxProvider(
-                predicate: static (s, _) => IsSyntaxTargetForGeneration(s),
-                transform: static (ctx, _) => GetSemanticTargetForGeneration(ctx))
-            .Where(static m => m is not null);
+        IncrementalValuesProvider<EnumToGenerate?> enumDeclarations = context.SyntaxProvider
+            .ForAttributeWithMetadataName(EnumExtensionsAttribute,
+                predicate: static (s, _) => s is EnumDeclarationSyntax,
+                transform: GetTypeToGenerate)
+            .WithTrackingName(TrackingNames.InitialExtraction)
+            .Where(static m => m is not null)
+            .WithTrackingName(TrackingNames.RemovingNulls);
 
-        IncrementalValueProvider<(Compilation, ImmutableArray<EnumDeclarationSyntax>)> compilationAndEnums
-                   = context.CompilationProvider.Combine(enumDeclarations.Collect());
 
-
-        context.RegisterSourceOutput(compilationAndEnums,
-            static (spc, source) => Execute(source.Item1, source.Item2, spc));
+        context.RegisterSourceOutput(enumDeclarations,
+            static (spc, source) => Execute(source, spc));
     }
+
+    static EnumToGenerate? GetTypeToGenerate(GeneratorAttributeSyntaxContext context, CancellationToken ct)
+    {
+        INamedTypeSymbol? enumSymbol = context.TargetSymbol as INamedTypeSymbol;
+        if (enumSymbol is null)
+        {
+            // nothing to do if this type isn't available
+            return null;
+        }
+
+        ct.ThrowIfCancellationRequested();
+
+        string name = enumSymbol.Name + "Extensions";
+        string nameSpace = enumSymbol.ContainingNamespace.IsGlobalNamespace ? string.Empty : enumSymbol.ContainingNamespace.ToString();
+        var hasFlags = false;
+
+        foreach (AttributeData attributeData in enumSymbol.GetAttributes())
+        {
+            if ((attributeData.AttributeClass?.Name == "FlagsAttribute" ||
+                 attributeData.AttributeClass?.Name == "Flags") &&
+                attributeData.AttributeClass.ToDisplayString() == FlagsAttribute)
+            {
+                hasFlags = true;
+                continue;
+            }
+
+            if (attributeData.AttributeClass?.Name != "EnumExtensionsAttribute" ||
+                attributeData.AttributeClass.ToDisplayString() != EnumExtensionsAttribute)
+            {
+                continue;
+            }
+
+            foreach (KeyValuePair<string, TypedConstant> namedArgument in attributeData.NamedArguments)
+            {
+                if (namedArgument.Key == "ExtensionClassNamespace"
+                    && namedArgument.Value.Value?.ToString() is { } ns)
+                {
+                    nameSpace = ns;
+                    continue;
+                }
+
+                if (namedArgument.Key == "ExtensionClassName"
+                    && namedArgument.Value.Value?.ToString() is { } n)
+                {
+                    name = n;
+                }
+            }
+        }
+
+        string fullyQualifiedName = enumSymbol.ToString();
+        string underlyingType = enumSymbol.EnumUnderlyingType?.ToString() ?? "int";
+
+        var enumMembers = enumSymbol.GetMembers();
+        var members = new List<(string, EnumValueOption)>(enumMembers.Length);
+        HashSet<string>? displayNames = null;
+        var isDisplayNameTheFirstPresence = false;
+
+        foreach (var member in enumMembers)
+        {
+            if (member is not IFieldSymbol field
+                || field.ConstantValue is null)
+            {
+                continue;
+            }
+
+            string? displayName = null;
+            foreach (var attribute in member.GetAttributes())
+            {
+                if (attribute.AttributeClass?.Name == "DisplayAttribute" &&
+                    attribute.AttributeClass.ToDisplayString() == DisplayAttribute)
+                {
+                    foreach (var namedArgument in attribute.NamedArguments)
+                    {
+                        if (namedArgument.Key == "Name" && namedArgument.Value.Value?.ToString() is { } dn)
+                        {
+                            // found display attribute, all done
+                            displayName = dn;
+                            goto addDisplayName;
+                        }
+                    }
+                }
+
+                if (attribute.AttributeClass?.Name == "DescriptionAttribute"
+                    && attribute.AttributeClass.ToDisplayString() == DescriptionAttribute
+                    && attribute.ConstructorArguments.Length == 1)
+                {
+                    if (attribute.ConstructorArguments[0].Value?.ToString() is { } dn)
+                    {
+                        // found display attribute, all done
+                        // Handle cases where contains a quote or a backslash
+                        displayName = dn
+                            .Replace(@"\", @"\\")
+                            .Replace("\"", "\\\"");
+                        goto addDisplayName;
+                    }
+                }
+            }
+
+        addDisplayName:
+            if (displayName is not null)
+            {
+                displayNames ??= new();
+                isDisplayNameTheFirstPresence = displayNames.Add(displayName);
+            }
+
+            members.Add((member.Name, new EnumValueOption(displayName, isDisplayNameTheFirstPresence)));
+        }
+
+        return new EnumToGenerate(
+            name: name,
+            fullyQualifiedName: fullyQualifiedName,
+            ns: nameSpace,
+            underlyingType: underlyingType,
+            isPublic: enumSymbol.DeclaredAccessibility == Accessibility.Public,
+            hasFlags: hasFlags,
+            names: members,
+            isDisplayAttributeUsed: displayNames?.Count > 0);
+    }
+
 
     static bool IsSyntaxTargetForGeneration(SyntaxNode node)
         => node is EnumDeclarationSyntax m && m.AttributeLists.Count > 0;
@@ -65,133 +189,17 @@ public class EnumGenerator : IIncrementalGenerator
         // we didn't find the attribute we were looking for
         return null;
     }
-
-    static void Execute(Compilation compilation, ImmutableArray<EnumDeclarationSyntax> enums, SourceProductionContext context)
+    static void Execute(in EnumToGenerate? enumToGenerate, SourceProductionContext context)
     {
-        if (enums.IsDefaultOrEmpty)
+        if (enumToGenerate is { } eg)
         {
-            return;
+            StringBuilder sb = new StringBuilder();
+            var result = SourceGenerationHelper.GenerateExtensionClass(sb, in eg);
+            context.AddSource(eg.Name + "_EnumExtensions.g.cs", SourceText.From(result, Encoding.UTF8));
         }
-
-        // Add a dummy diagnostic
-        context.ReportDiagnostic(CreateDiagnostic(enums[0]));
-
-        IEnumerable<EnumDeclarationSyntax> distinctEnums = enums.Distinct();
-
-        // Convert each EnumDeclarationSyntax to an EnumToGenerate
-        List<EnumToGenerate> enumsToGenerate = GetTypesToGenerate(compilation, distinctEnums, context.CancellationToken);
-
-        // If there were errors in the EnumDeclarationSyntax, we won't create an
-        // EnumToGenerate for it, so make sure we have something to generate
-        if (enumsToGenerate.Count > 0)
-        {
-            // generate the source code and add it to the output
-            string result = SourceGenerationHelper.GenerateExtensionClass(enumsToGenerate);
-            context.AddSource("EnumExtensions.g.cs", SourceText.From(result, Encoding.UTF8));
-        }
-
     }
 
-    private static List<EnumToGenerate> GetTypesToGenerate(
-          Compilation compilation, 
-          IEnumerable<EnumDeclarationSyntax> enums,
-          CancellationToken ct)
-    {
-        var enumsToGenerate = new List<EnumToGenerate>();
-        INamedTypeSymbol? enumAttribute = compilation.GetTypeByMetadataName(EnumExtensionsAttribute);
-        if (enumAttribute == null)
-        {
-            // nothing to do if this type isn't available
-            return enumsToGenerate;
-        }
-
-        foreach (var enumDeclarationSyntax in enums)
-        {
-            // stop if we're asked to
-            ct.ThrowIfCancellationRequested();
-
-            SemanticModel semanticModel = compilation.GetSemanticModel(enumDeclarationSyntax.SyntaxTree);
-            if (semanticModel.GetDeclaredSymbol(enumDeclarationSyntax) is not INamedTypeSymbol enumSymbol)
-            {
-                // something went wrong
-                continue;
-            }
-
-            string enumName = enumSymbol.ToString();
-            string extensionName = "EnumExtensions";
-
-            string className = null;
-            string namespaceName = null;
-
-
-            foreach (AttributeData attributeData in enumSymbol.GetAttributes())
-            {
-                if (!enumAttribute.Equals(attributeData.AttributeClass, SymbolEqualityComparer.Default))
-                {
-                    continue;
-                }
-                if(!attributeData.ConstructorArguments.IsEmpty)
-                {
-                    ImmutableArray<TypedConstant> args = attributeData.ConstructorArguments;
-                    foreach (var arg in args)
-                    {
-                        if(arg.Kind == TypedConstantKind.Error)
-                        {
-                            return enumsToGenerate;
-                        }
-                    }
-                    switch( args.Length )
-                    {
-                        case 1:
-                            className = (string)args[0].Value;
-                            break;
-                    }
-
-                }
-
-                if(!attributeData.NamedArguments.IsEmpty)
-                {
-                    foreach (KeyValuePair<string, TypedConstant> namedArgument in attributeData.NamedArguments)
-                    {
-                        TypedConstant typedConstant = namedArgument.Value;
-                        if(typedConstant.Kind == TypedConstantKind.Error)
-                        {
-                            return enumsToGenerate;
-                        } else
-                        {
-                            switch(namedArgument.Key)
-                            {
-                                case "extensionClassName":
-                                    className = namedArgument.Value.ToString();
-                                    break;
-                                case "ExtensionNamespaceName":
-                                    namespaceName = namedArgument.Value.ToString();
-                                    break;
-                            }
-                        }
-                    }
-                }
-          
-                break;
-            }
-
-       
-            ImmutableArray<ISymbol> enumMembers = enumSymbol.GetMembers();
-            var members = new List<string>(enumMembers.Length);
-
-            foreach (ISymbol member in enumMembers)
-            {
-                if (member is IFieldSymbol field && field.ConstantValue is not null)
-                {
-                    members.Add(member.Name);
-                }
-            }
-
-            enumsToGenerate.Add(new EnumToGenerate(enumName, extensionName, members));
-        }
-
-        return enumsToGenerate;
-    }
+    
 
     static Diagnostic CreateDiagnostic(EnumDeclarationSyntax syntax)
     {
